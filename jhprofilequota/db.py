@@ -57,21 +57,18 @@ def add_usage(conn: sq3.Connection, user: str, profile_slug: str, hours: float, 
 
     update_user_token(conn, user, profile_slug, is_admin, adjust = -1 * tokens)
 
-
-def add_profile(conn: sq3.Connection, profile_slug: str, display_name: str, is_default: bool, image: str, 
-                cpu_gaurantee: float, cpu_limit: float, ram_gaurantee: float, ram_limit: float, gpu_count: int, active_for_admins: bool, active_for_users: bool, 
-                cost_tokens_per_hour: float, rate_admin: float, rate_user: float, initial_admin: float, initial_user: float, max_admin: float, max_user: float) -> None:
+# to be passed a list as from KubeSpawner.profile_list; many items may need to be null as only display_name and slug are required there
+def add_profiles_from_list(conn: sq3.Connection, profile_list: List) -> None:
     c = conn.cursor()
-    c.execute('''INSERT INTO profiles (profile_slug, display_name, is_default, image, cpu_limit, cpu_gaurantee, ram_limit, 
-               ram_gaurantee, gpu_count, active_for_admins, active_for_users, 
-               cost_tokens_per_hour, rate_admin, rate_user, initial_admin, initial_user, max_admin, max_user) VALUES 
-               ('%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s');'''%
-              (profile_slug, display_name, is_default, image, cpu_limit, cpu_gaurantee, ram_limit, ram_gaurantee, gpu_count, active_for_admins, active_for_users, 
-               cost_tokens_per_hour, rate_admin, rate_user, initial_admin, initial_user, max_admin, max_user))
-    # if the new one is specified as default, remove any other defaults listed
-    if is_default:
-        cmd: str = "UPDATE profiles SET is_default='False' WHERE profile_slug != '%s';"%(profile_slug)
-        c.execute(cmd)
+    profile: Dict
+    for profile in profile_list:
+        profile_slug: str = profile["slug"]
+        c.execute("INSERT INTO profiles (profile_slug) VALUES ('%s');"%(profile_slug))
+        if "quota" in profile:
+            for key in ["active_for_admins", "active_for_users", "initial_admin"]:
+                if key in profile["quota"]:
+                    value = profile["quota"][key]
+                    c.execute("UPDATE profiles SET '%s' = '%s' WHERE profile_slug = '%s';"%(key, value, profile_slug))
 
     conn.commit()
 
@@ -81,23 +78,15 @@ def create_db(filename: str) -> sq3.Connection:
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS profiles (
               profile_slug TEXT PRIMARY KEY,
-              display_name TEXT NOT NULL,
-              is_default TEXT DEFAULT "False",
-              image TEXT NOT NULL,
-              cpu_limit REAL NOT NULL,
-              cpu_gaurantee REAL NOT NULL,
-              ram_limit REAL NOT NULL,
-              ram_gaurantee REAL NOT NULL,
-              gpu_count INTEGER DEFAULT 0,
               active_for_admins TEXT DEFAULT "True",
               active_for_users TEXT DEFAULT "True",
               cost_tokens_per_hour REAL DEFAULT 0.0,
-              rate_admin REAL NOT NULL,
-              rate_user REAL NOT NULL,
-              initial_admin REAL NOT NULL,
-              initial_user REAL NOT NULL,
-              max_admin REAL NOT NULL,
-              max_user REAL NOT NULL
+              rate_admin REAL DEFAULT 0.0,
+              rate_user REAL DEFAULT 0.0,
+              initial_admin REAL DEFAULT 1.0,
+              initial_user REAL DEFAULT 1.0,
+              max_admin REAL DEFAULT 1.0,
+              max_user REAL DEFAULT 1.0
               );''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS usage (
