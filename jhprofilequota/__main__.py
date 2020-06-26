@@ -83,7 +83,7 @@ def format_td(td):
 
 @coroutine
 def cull_idle(
-    url, api_token, profiles_list = [], db_filename = "profile_quotas.db", cull_every = 600, concurrency=10
+    url, api_token, profiles_list = [], db_filename = "profile_quotas.db", check_every = 600, concurrency=10
 ):
     """Shutdown idle single-user servers"""
     
@@ -174,7 +174,7 @@ def cull_idle(
             
             for profile in profiles_list:
                 if profile["slug"] == profile_slug and "quota" in profile:
-                    hours = (cull_every / 60 / 60)
+                    hours = (check_every / 60 / 60)
                     db.log_usage(db_filename, profiles_list, user['name'], profile_slug, hours, user['admin'])
                     db.charge_tokens(db_filename, profiles_list, user['name'], profile_slug, hours, user['admin']) # TODO
                     current_balance = db.get_balance(db_filename, profiles_list, user['name'], profiles_slug, user['admin']) # TODO
@@ -273,7 +273,7 @@ if __name__ == '__main__':
         help="The JupyterHub API URL",
     )
     define(
-        'cull_every',
+        'check_every',
         default=600,
         help="The interval (in seconds) for checking for idle servers to cull",
     )
@@ -293,8 +293,8 @@ if __name__ == '__main__':
     )
 
     parse_command_line()
-    if not options.cull_every:
-        options.cull_every = 600
+    if not options.check_every:
+        options.check_every = 600
     api_token = os.environ['JUPYTERHUB_API_TOKEN']
 
     profiles_list = json.loads(options.profiles_json)
@@ -315,14 +315,14 @@ if __name__ == '__main__':
         api_token=api_token,
         profiles_list=profiles_list,
         db_filename=options.quota_db_filename,
-        cull_every=options.cull_every,
+        check_every=options.check_every,
         concurrency=options.concurrency,
     )
     # schedule first cull immediately
     # because PeriodicCallback doesn't start until the end of the first interval
     loop.add_callback(cull)
     # schedule periodic cull
-    pc = PeriodicCallback(cull, 1e3 * options.cull_every)
+    pc = PeriodicCallback(cull, 1e3 * options.check_every)
     pc.start()
     try:
         loop.start()
