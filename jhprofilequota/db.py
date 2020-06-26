@@ -8,11 +8,12 @@ TIME_FMT = "%Y-%m-%d %H:%M:%S"
 # returns the profiles list with an extra "disabled" = True or False in each profile dictionary, determined by 
 # the quota metadata in the profiles (minBalanceToSpawn, default to 0.0 if not specified) and the users' balances
 # also an entry for the current "balanceTokens" and "balanceHours" (the latter computed according to the balance in tokens and the
-# profiles cost per hour (if the cost per hour is 0, the balanceHours is set as "Unlimited")
+# profiles cost per hour (if the cost per hour is 0, the balanceHours is set as float("inf"), python's infinity)
 # for profiles without a quota set, entries are not added
-
 # if the user doesn't have a balance defined, it defaults to 0.0 (thus call update_user_tokens before this to initialize/update balances)
-def get_profiles_by_balance(db_filename: str, user: str, profiles: List, is_admin: bool) -> List:
+def get_profiles_by_balance(db_filename: str, profiles: List, user: str, is_admin: bool) -> List:
+    ensure_initialized(db_filename, profiles, user, is_admin)
+    
     conn: sq3.Connection = sq3.connect(db_filename)
     c = conn.cursor()
 
@@ -27,13 +28,12 @@ def get_profiles_by_balance(db_filename: str, user: str, profiles: List, is_admi
             c.execute("SELECT count FROM usertokens WHERE user='%s' AND profile_slug='%s';"%(user, profile_slug))
             res: Optional[Tuple[float]] = c.fetchone()
             
-            balance: float
+            # this is just to shut mypy up - we ensured initialized above
+            balance: float = 0.0
             if res:
                 balance = res[0]
-            else:
-                balance = 0.0
-
-            balance_hours: Union[float, str] = "Unlimited"
+                
+            balance_hours: float = float("inf")
             if cost_tokens_per_hour > 0:
                 balance_hours = balance / cost_tokens_per_hour
 
@@ -48,16 +48,16 @@ def get_profiles_by_balance(db_filename: str, user: str, profiles: List, is_admi
     return profiles
 
 
-
 # returns token count; updating their count based on time elapsed since last update
 # if user is not defined (e.g. if this is the first time they've logged in, or the first time since the db was wiped...), 
 # then returns the initial token count defined in the tokens table
-def update_user_tokens(db_filename: str, user: str, profiles: List, is_admin: bool) -> None: 
-    profile: Dict
+def update_user_tokens(db_filename: str, profiles: List, user: str, is_admin: bool) -> None: 
+    ensure_initialized(db_filename, profiles, user, is_admin)
 
     conn: sq3.Connection = sq3.connect(db_filename)
     c = conn.cursor()
 
+    profile: Dict
     for profile in profiles:
         profile_slug: str = profile["slug"]
         sys.stderr.write("Checking profile " + profile_slug + "\n")
@@ -73,7 +73,6 @@ def update_user_tokens(db_filename: str, user: str, profiles: List, is_admin: bo
                 initial = profile["quota"].get("admins", {}).get("initialBalance", 0.0)
                 max_count = profile["quota"].get("admins", {}).get("maxBalance", 0.0)
                 active = profile["quota"].get("admins", {}).get("active", True)  # quotas default to active if not specifid
-                sys.stderr.write("  initial is " + str(initial) + "for admins...\n")
             else:
                 rate = profile["quota"].get("users", {}).get("newTokensPerHour", 0.0)
                 initial = profile["quota"].get("users", {}).get("initialBalance", 0.0)
@@ -89,29 +88,93 @@ def update_user_tokens(db_filename: str, user: str, profiles: List, is_admin: bo
         
         c.execute("SELECT count, last_add FROM usertokens WHERE user='%s' AND profile_slug='%s';"%(user, profile_slug))
         count_lastadd: Optional[Tuple[float, str]] = c.fetchone()
+        
+        # again, just to shut up mypy - ran ensure_initialized above
         balance: float = 0.0
-    
-        # if they have a balance in the db, we need to update it
+        lastadd: str = nowtimestamp
         if count_lastadd:
             balance = count_lastadd[0]
-            lastadd: str = count_lastadd[1]
-            since_last_duration: datetime.timedelta = nowtime - datetime.datetime.strptime(lastadd, TIME_FMT)
-            since_last_seconds: int = since_last_duration.days * 24 * 60 * 60 + since_last_duration.seconds
-            since_last_hours: float = since_last_seconds / (60 * 60)
-            new_accumulated: float = since_last_hours * rate
-            balance = min(balance + new_accumulated, max_count)
-            c.execute("UPDATE usertokens SET count='%s', last_add='%s' WHERE user='%s' AND profile_slug = '%s'"%(balance, nowtimestamp, user, profile_slug))
-        # if they don't have a balance in the db, we need to create a new balance
-        else:
-            balance = initial
-            sys.stderr.write(" setting balance to " + str(balance) + "for admins...\n")
-            c.execute("INSERT INTO usertokens (user, profile_slug, count, last_add) VALUES ('%s', '%s', '%s', '%s')"%(user, profile_slug, balance, nowtimestamp))
-    
+            lastadd = count_lastadd[1]
+
+        since_last_duration: datetime.timedelta = nowtime - datetime.datetime.strptime(lastadd, TIME_FMT)
+        since_last_seconds: int = since_last_duration.days * 24 * 60 * 60 + since_last_duration.seconds
+        since_last_hours: float = since_last_seconds / (60 * 60)
+        
+        new_accumulated: float = since_last_hours * rate
+        balance = min(balance + new_accumulated, max_count)
+        
+        c.execute("UPDATE usertokens SET count='%s', last_add='%s' WHERE user='%s' AND profile_slug = '%s'"%(balance, nowtimestamp, user, profile_slug))
+      
     conn.commit()
     conn.close()
-    
 
-# logs usage
+def get_initial(profiles_list: List, profile_slug: str, is_admin: bool) -> float:
+    profile: Dict
+    initial: float = 0.0
+    for profile in profiles_list:
+        if "quota" in profile and profile["slug"] == profile_slug:
+            if is_admin:
+                initial = profile["quota"].get("admins", {}).get("initialBalance", 0.0)
+            else:
+                initial = profile["quota"].get("users", {}).get("initialBalance", 0.0)
+    return initial
+
+def ensure_initialized(db_filename: str, profiles: List, user: str, is_admin: bool) -> None:
+    profile: Dict
+
+    conn: sq3.Connection = sq3.connect(db_filename)
+    c = conn.cursor()
+
+    for profile in profiles:
+        profile_slug = profile["slug"]
+        initial: float = get_initial(profiles, profile_slug, is_admin)
+
+        c.execute("SELECT count, last_add FROM usertokens WHERE user='%s' AND profile_slug='%s';"%(user, profile_slug))
+        count_lastadd: Optional[Tuple[float, str]] = c.fetchone()
+
+        if not count_lastadd:
+            nowtime: datetime.datetime = datetime.datetime.now()
+            nowtimestamp: str = nowtime.strftime(TIME_FMT)
+            c.execute("INSERT INTO usertokens (user, profile_slug, count, last_add) VALUES ('%s', '%s', '%s', '%s')"%(user, profile_slug, initial, nowtimestamp))
+
+    conn.commit()
+    conn.close()
+
+def get_balance(db_filename: str, profiles: List, user: str, profile_slug: str, is_admin: bool) -> float: 
+    ensure_initialized(db_filename, profiles, user, is_admin)
+
+    conn: sq3.Connection = sq3.connect(db_filename)
+    c = conn.cursor()
+    
+    c.execute("SELECT count, last_add FROM usertokens WHERE user='%s' AND profile_slug='%s';"%(user, profile_slug))
+    count_lastadd: Optional[Tuple[float, str]] = c.fetchone()
+
+    balance: float = 0.0
+    if count_lastadd:
+        balance = count_lastadd[0]
+    
+    conn.close()
+    return balance
+
+def charge_tokens(db_filename: str, profiles: List, user: str, profile_slug: str, hours: float, is_admin: bool) -> None:
+    ensure_initialized(db_filename, profiles, user, is_admin)
+
+    conn: sq3.Connection = sq3.connect(db_filename)
+    c = conn.cursor()
+
+    cost_tokens_per_hour: float = 0.0
+    profile: Dict
+    for profile in profiles:
+        if "quota" in profile and profile["slug"] == profile_slug:
+            cost_tokens_per_hour = profile["quota"].get("costTokensPerHour", 0.0)
+    
+    tokens_charged: float = hours * cost_tokens_per_hour
+    new_balance: float = get_balance(db_filename, profiles, user, profile_slug, is_admin) - tokens_charged
+    c.execute("UPDATE usertokens SET count='%s' WHERE user='%s' AND profile_slug='%s';"%(new_balance, user, profile_slug)) 
+   
+    conn.commit()
+    conn.close()
+
 def log_usage(db_filename: str, profiles: List, user: str, profile_slug: str, hours: float, is_admin: bool) -> None:
     conn: sq3.Connection = sq3.connect(db_filename)
     c = conn.cursor()

@@ -3,37 +3,29 @@
 
 This is a modification of the cull_idle_servers.py script bundled with jupyterhub, originally sourced 
 from https://github.com/jupyterhub/jupyterhub/blob/d126baa443ad7d893be2ff4a70afe9ef5b8a4a1a/examples/cull-idle/cull_idle_servers.py
-after installing package run with 
+Main differences:
+  - no cull_users check
+  - no max_age check
+  - no inactivity checks or timeout defined
+  - check based on balance from db!
 
-Caveats:
-
-last_activity is not updated with high frequency,
-so cull timeout should be greater than the sum of:
-
-- single-user websocket ping interval (default: 30s)
-- JupyterHub.last_activity_interval (default: 5 minutes)
 
 You can run this as a service managed by JupyterHub with this in your config::
 
 
     c.JupyterHub.services = [
         {
-            'name': 'cull-idle',
+            'name': 'cull-quota',
             'admin': True,
-            'command': [sys.executable, 'cull_idle_servers.py', '--timeout=3600'],
+            'command': [sys.executable, '-m', 'jhprofilequota', '--check_every=600', '--db_file=profile_quotas.db'],
         }
     ]
 
 Or run it manually by generating an API token and storing it in `JUPYTERHUB_API_TOKEN`:
 
     export JUPYTERHUB_API_TOKEN=$(jupyterhub token)
-    python3 cull_idle_servers.py [--timeout=900] [--url=http://127.0.0.1:8081/hub/api]
+    python3 -m profilequota [--check_every=600] [--url=http://127.0.0.1:8081/hub/api] --db_file=profile_quotas.db
 
-This script uses the same ``--timeout`` and ``--max-age`` values for
-culling users and users' servers.  If you want a different value for
-users and servers, you should add this script to the services list
-twice, just with different ``name``s, different values, and one with
-the ``--cull-users`` option.
 """
 import json
 import os
@@ -44,17 +36,18 @@ from functools import partial
 try:
     from urllib.parse import quote
 except ImportError:
-    from urllib import quote
+    from urllib import quote # type: ignore
 
 import dateutil.parser
 
-from tornado.gen import coroutine, multi
+from tornado.gen import coroutine, multi # type: ignore
 from tornado.locks import Semaphore
 from tornado.log import app_log
 from tornado.httpclient import AsyncHTTPClient, HTTPRequest
 from tornado.ioloop import IOLoop, PeriodicCallback
 from tornado.options import define, options, parse_command_line
 
+import db
 
 def parse_date(date_string):
     """Parse a timestamp
@@ -90,12 +83,10 @@ def format_td(td):
 
 @coroutine
 def cull_idle(
-    url, api_token, inactive_limit, cull_users=False, max_age=0, concurrency=10
+    url, api_token, profiles_list = [], db_filename = "profile_quotas.db", cull_every = 600, concurrency=10
 ):
-    """Shutdown idle single-user servers
-
-    If cull_users, inactive *users* will be deleted as well.
-    """
+    """Shutdown idle single-user servers"""
+    
     auth_header = {'Authorization': 'token %s' % api_token}
     req = HTTPRequest(url=url + '/users', headers=auth_header)
     now = datetime.now(timezone.utc)
@@ -121,7 +112,7 @@ def cull_idle(
     futures = []
 
     @coroutine
-    def handle_server(user, server_name, server, max_age, inactive_limit):
+    def handle_server(user, server_name, server):
         """Handle (maybe) culling a single server
 
         "server" is the entire server model from the API.
@@ -157,16 +148,6 @@ def cull_idle(
             # started may be undefined on jupyterhub < 0.9
             age = None
 
-        # check last activity
-        # last_activity can be None in 0.9
-        if server['last_activity']:
-            inactive = now - parse_date(server['last_activity'])
-        else:
-            # no activity yet, use start date
-            # last_activity may be None with jupyterhub 0.9,
-            # which introduces the 'started' field which is never None
-            # for running servers
-            inactive = age
 
         # CUSTOM CULLING TEST CODE HERE
         # Add in additional server tests here.  Return False to mean "don't
@@ -182,33 +163,36 @@ def cull_idle(
         #     return False
         # inactive_limit = server['state']['culltime']
 
-        should_cull = (
-            inactive is not None and inactive.total_seconds() >= inactive_limit
-        )
+        should_cull = False
+
+        # if there's no profile info in the server state to base the determinaton on, we got nothing to go on
+        profile_slug = server.get("state", {}).get("profile_name", None)
+        balance = float("inf")
+
+        if profile_slug:
+            db.update_user_tokens(db_filename, profiles_list, user['name'], user['admin'])
+            
+            for profile in profiles_list:
+                if profile["slug"] == profile_slug and "quota" in profile:
+                    hours = (cull_every / 60 / 60)
+                    db.log_usage(db_filename, profiles_list, user['name'], profile_slug, hours, user['admin'])
+                    db.charge_tokens(db_filename, profiles_list, user['name'], profile_slug, hours, user['admin']) # TODO
+                    current_balance = db.get_balance(db_filename, profiles_list, user['name'], profiles_slug, user['admin']) # TODO
+
+                    if current_balance < 0.0:
+                        should_cull = True
+
         if should_cull:
             app_log.info(
-                "Culling server %s (inactive for %s)", log_name, format_td(inactive)
+                "Culling server %s (balance for profile %s is %s)", log_name, profile_slug, balance
             )
-
-        if max_age and not should_cull:
-            # only check started if max_age is specified
-            # so that we can still be compatible with jupyterhub 0.8
-            # which doesn't define the 'started' field
-            if age is not None and age.total_seconds() >= max_age:
-                app_log.info(
-                    "Culling server %s (age: %s, inactive for %s)",
-                    log_name,
-                    format_td(age),
-                    format_td(inactive),
-                )
-                should_cull = True
 
         if not should_cull:
             app_log.debug(
-                "Not culling server %s (age: %s, inactive for %s)",
+                "Not culling server %s (balance for profile %s is %s)",
                 log_name,
-                format_td(age),
-                format_td(inactive),
+                profile_slug,
+                balance,
             )
             return False
 
@@ -256,73 +240,14 @@ def cull_idle(
                     'url': user['server'],
                 }
         server_futures = [
-            handle_server(user, server_name, server, max_age, inactive_limit)
+            handle_server(user, server_name, server)
             for server_name, server in servers.items()
         ]
         results = yield multi(server_futures)
-        if not cull_users:
-            return
-        # some servers are still running, cannot cull users
-        still_alive = len(results) - sum(results)
-        if still_alive:
-            app_log.debug(
-                "Not culling user %s with %i servers still alive",
-                user['name'],
-                still_alive,
-            )
-            return False
-
-        should_cull = False
-        if user.get('created'):
-            age = now - parse_date(user['created'])
-        else:
-            # created may be undefined on jupyterhub < 0.9
-            age = None
-
-        # check last activity
-        # last_activity can be None in 0.9
-        if user['last_activity']:
-            inactive = now - parse_date(user['last_activity'])
-        else:
-            # no activity yet, use start date
-            # last_activity may be None with jupyterhub 0.9,
-            # which introduces the 'created' field which is never None
-            inactive = age
-
-        should_cull = (
-            inactive is not None and inactive.total_seconds() >= inactive_limit
-        )
-        if should_cull:
-            app_log.info("Culling user %s (inactive for %s)", user['name'], inactive)
-
-        if max_age and not should_cull:
-            # only check created if max_age is specified
-            # so that we can still be compatible with jupyterhub 0.8
-            # which doesn't define the 'started' field
-            if age is not None and age.total_seconds() >= max_age:
-                app_log.info(
-                    "Culling user %s (age: %s, inactive for %s)",
-                    user['name'],
-                    format_td(age),
-                    format_td(inactive),
-                )
-                should_cull = True
-
-        if not should_cull:
-            app_log.debug(
-                "Not culling user %s (created: %s, last active: %s)",
-                user['name'],
-                format_td(age),
-                format_td(inactive),
-            )
-            return False
-
-        req = HTTPRequest(
-            url=url + '/users/%s' % user['name'], method='DELETE', headers=auth_header
-        )
-        yield fetch(req)
-        return True
-
+    
+    
+    
+    
     for user in users:
         futures.append((user['name'], handle_user(user)))
 
@@ -338,26 +263,19 @@ def cull_idle(
 
 if __name__ == '__main__':
     define(
+        'profiles_json',
+        default=os.environ.get('JUPYTERHUB_PROFILES_JSON', '[]'),
+        help="Hub profiles as JSON, for use in quota determination (which are stored with profiles)."
+    )
+    define(
         'url',
         default=os.environ.get('JUPYTERHUB_API_URL'),
         help="The JupyterHub API URL",
     )
-    define('timeout', default=600, help="The idle timeout (in seconds)")
     define(
         'cull_every',
-        default=0,
+        default=600,
         help="The interval (in seconds) for checking for idle servers to cull",
-    )
-    define(
-        'max_age',
-        default=0,
-        help="The maximum age (in seconds) of servers that should be culled even if they are active",
-    )
-    define(
-        'cull_users',
-        default=False,
-        help="""Cull users in addition to servers.
-                This is for use in temporary-user cases such as tmpnb.""",
     )
     define(
         'concurrency',
@@ -368,11 +286,18 @@ if __name__ == '__main__':
                 so limit the number of API requests we have outstanding at any given time.
                 """,
     )
+    define(
+        'quota_db_filename',
+        default = 'profile_quotas.db',
+        help="File path for sqlite3 database to use for quota storage; will be created if it doesn't exist.",
+    )
 
     parse_command_line()
     if not options.cull_every:
-        options.cull_every = options.timeout // 2
+        options.cull_every = 600
     api_token = os.environ['JUPYTERHUB_API_TOKEN']
+
+    profiles_list = json.loads(options.profiles_json)
 
     try:
         AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
@@ -388,9 +313,9 @@ if __name__ == '__main__':
         cull_idle,
         url=options.url,
         api_token=api_token,
-        inactive_limit=options.timeout,
-        cull_users=options.cull_users,
-        max_age=options.max_age,
+        profiles_list=profiles_list,
+        db_filename=options.quota_db_filename,
+        cull_every=options.cull_every,
         concurrency=options.concurrency,
     )
     # schedule first cull immediately
