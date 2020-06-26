@@ -47,7 +47,7 @@ from tornado.httpclient import AsyncHTTPClient, HTTPRequest
 from tornado.ioloop import IOLoop, PeriodicCallback
 from tornado.options import define, options, parse_command_line
 
-import db
+from jhprofilequota import db
 
 def parse_date(date_string):
     """Parse a timestamp
@@ -85,6 +85,12 @@ def format_td(td):
 def cull_idle(
     url, api_token, profiles_list = [], db_filename = "profile_quotas.db", check_every = 600, concurrency=10
 ):
+    import sys
+    sys.stderr.write("called cull_idle, infos:\n")
+    sys.stderr.write(str(profiles_list) + "\n")
+    sys.stderr.write(db_filename + "\n")
+    sys.stderr.write(str(check_every) + "\n")
+
     """Shutdown idle single-user servers"""
     
     auth_header = {'Authorization': 'token %s' % api_token}
@@ -295,9 +301,13 @@ if __name__ == '__main__':
     parse_command_line()
     if not options.check_every:
         options.check_every = 600
+    import subprocess
+    subprocess.check_output("echo $JUPYTERHUB_API_TOKEN > token.txt", shell = True) 
+    sys.stderr.write("API TOKEN IS " + os.environ['JUPYTERHUB_API_TOKEN'] + "\n")
     api_token = os.environ['JUPYTERHUB_API_TOKEN']
 
     profiles_list = json.loads(options.profiles_json)
+    #profiles_list = json.loads("[]")
 
     try:
         AsyncHTTPClient.configure("tornado.curl_httpclient.CurlAsyncHTTPClient")
