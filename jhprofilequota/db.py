@@ -1,6 +1,7 @@
 from typing import List, Dict, Tuple, Optional, Union
 import sqlite3 as sq3
 import datetime
+import sys
 
 TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
@@ -8,7 +9,7 @@ TIME_FMT = "%Y-%m-%d %H:%M:%S"
 # the quota metadata in the profiles (minBalanceToSpawn, default to 0.0 if not specified) and the users' balances
 # also an entry for the current "balanceTokens" and "balanceHours" (the latter computed according to the balance in tokens and the
 # profiles cost per hour (if the cost per hour is 0, the balanceHours is set as "Unlimited")
-# for profiles without a quota set, "disabled" is set to None and the balances are 0.0
+# for profiles without a quota set, entries are not added
 
 # if the user doesn't have a balance defined, it defaults to 0.0 (thus call update_user_tokens before this to initialize/update balances)
 def get_profiles_by_balance(db_filename: str, user: str, profiles: List, is_admin: bool) -> List:
@@ -40,10 +41,6 @@ def get_profiles_by_balance(db_filename: str, user: str, profiles: List, is_admi
             profile["balanceTokens"] = balance
             profile["balanceHours"] = balance_hours
 
-        else:
-            profile["disabled"] = None
-            profile["balanceTokens"] = 0.0
-            profile["balanceHours"] = 0.0
 
     conn.commit()
     conn.close()
@@ -63,6 +60,7 @@ def update_user_tokens(db_filename: str, user: str, profiles: List, is_admin: bo
 
     for profile in profiles:
         profile_slug: str = profile["slug"]
+        sys.stderr.write("Checking profile " + profile_slug + "\n")
 
         rate: float = 0.0
         initial: float = 0.0
@@ -75,6 +73,7 @@ def update_user_tokens(db_filename: str, user: str, profiles: List, is_admin: bo
                 initial = profile["quota"].get("admins", {}).get("initialBalance", 0.0)
                 max_count = profile["quota"].get("admins", {}).get("maxBalance", 0.0)
                 active = profile["quota"].get("admins", {}).get("active", True)  # quotas default to active if not specifid
+                sys.stderr.write("  initial is " + str(initial) + "for admins...\n")
             else:
                 rate = profile["quota"].get("users", {}).get("newTokensPerHour", 0.0)
                 initial = profile["quota"].get("users", {}).get("initialBalance", 0.0)
@@ -88,7 +87,7 @@ def update_user_tokens(db_filename: str, user: str, profiles: List, is_admin: bo
         nowtime: datetime.datetime = datetime.datetime.now()
         nowtimestamp: str = nowtime.strftime(TIME_FMT)
         
-        c.execute("SELECT count, last_add FROM usertokens WHERE user='%s';"%(user))
+        c.execute("SELECT count, last_add FROM usertokens WHERE user='%s' AND profile_slug='%s';"%(user, profile_slug))
         count_lastadd: Optional[Tuple[float, str]] = c.fetchone()
         balance: float = 0.0
     
@@ -104,7 +103,8 @@ def update_user_tokens(db_filename: str, user: str, profiles: List, is_admin: bo
             c.execute("UPDATE usertokens SET count='%s', last_add='%s' WHERE user='%s' AND profile_slug = '%s'"%(balance, nowtimestamp, user, profile_slug))
         # if they don't have a balance in the db, we need to create a new balance
         else:
-            balance = min(initial, max_count)
+            balance = initial
+            sys.stderr.write(" setting balance to " + str(balance) + "for admins...\n")
             c.execute("INSERT INTO usertokens (user, profile_slug, count, last_add) VALUES ('%s', '%s', '%s', '%s')"%(user, profile_slug, balance, nowtimestamp))
     
     conn.commit()
