@@ -85,11 +85,6 @@ def format_td(td):
 def cull_idle(
     url, api_token, profiles_list = [], db_filename = "profile_quotas.db", check_every = 600, concurrency=10
 ):
-    import sys
-    sys.stderr.write("called cull_idle, infos:\n")
-    sys.stderr.write(str(profiles_list) + "\n")
-    sys.stderr.write(db_filename + "\n")
-    sys.stderr.write(str(check_every) + "\n")
 
     """Shutdown idle single-user servers"""
     
@@ -172,7 +167,7 @@ def cull_idle(
         should_cull = False
 
         # if there's no profile info in the server state to base the determinaton on, we got nothing to go on
-        profile_slug = server.get("state", {}).get("profile_name", None)
+        profile_slug = server.get("state", {}).get("profile_slug", None)
         balance = float("inf")
 
         if profile_slug:
@@ -183,7 +178,7 @@ def cull_idle(
                     hours = (check_every / 60 / 60)
                     db.log_usage(db_filename, profiles_list, user['name'], profile_slug, hours, user['admin'])
                     db.charge_tokens(db_filename, profiles_list, user['name'], profile_slug, hours, user['admin']) # TODO
-                    current_balance = db.get_balance(db_filename, profiles_list, user['name'], profiles_slug, user['admin']) # TODO
+                    current_balance = db.get_balance(db_filename, profiles_list, user['name'], profile_slug, user['admin']) # TODO
 
                     if current_balance < 0.0:
                         should_cull = True
@@ -301,9 +296,6 @@ if __name__ == '__main__':
     parse_command_line()
     if not options.check_every:
         options.check_every = 600
-    import subprocess
-    subprocess.check_output("echo $JUPYTERHUB_API_TOKEN > token.txt", shell = True) 
-    sys.stderr.write("API TOKEN IS " + os.environ['JUPYTERHUB_API_TOKEN'] + "\n")
     api_token = os.environ['JUPYTERHUB_API_TOKEN']
 
     profiles_list = json.loads(options.profiles_json)
