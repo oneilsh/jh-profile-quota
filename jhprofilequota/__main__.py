@@ -47,7 +47,7 @@ from tornado.httpclient import AsyncHTTPClient, HTTPRequest
 from tornado.ioloop import IOLoop, PeriodicCallback
 from tornado.options import define, options, parse_command_line # type: ignore
 
-from jhprofilequota import db
+from jhprofilequota import profile_db as db
 
 def parse_date(date_string):
     """Parse a timestamp
