@@ -44,6 +44,7 @@ def get_profiles_by_balance(conn: sq3.Connection, profiles: List, user: str, is_
             if cost_tokens_per_hour > 0:
                 balance_hours = balance / cost_tokens_per_hour
 
+            profile["hasQuota"] = True
             profile["disabled"] = balance <= min_to_spawn
             profile["balanceTokens"] = balance
             profile["balanceHours"] = balance_hours
