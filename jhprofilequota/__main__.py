@@ -42,10 +42,10 @@ import dateutil.parser
 
 from tornado.gen import coroutine, multi # type: ignore
 from tornado.locks import Semaphore
-from tornado.log import app_log
+from tornado.log import app_log # type: ignore
 from tornado.httpclient import AsyncHTTPClient, HTTPRequest
 from tornado.ioloop import IOLoop, PeriodicCallback
-from tornado.options import define, options, parse_command_line
+from tornado.options import define, options, parse_command_line # type: ignore
 
 from jhprofilequota import db
 
@@ -171,17 +171,21 @@ def cull_idle(
         balance = float("inf")
 
         if profile_slug:
-            db.update_user_tokens(db_filename, profiles_list, user['name'], user['admin'])
+            conn = db.get_connection(db_filename)
+            db.update_user_tokens(conn, profiles_list, user['name'], user['admin'])
             
             for profile in profiles_list:
                 if profile["slug"] == profile_slug and "quota" in profile:
                     hours = (check_every / 60 / 60)
-                    db.log_usage(db_filename, profiles_list, user['name'], profile_slug, hours, user['admin'])
-                    db.charge_tokens(db_filename, profiles_list, user['name'], profile_slug, hours, user['admin']) # TODO
-                    current_balance = db.get_balance(db_filename, profiles_list, user['name'], profile_slug, user['admin']) # TODO
+                    db.log_usage(conn, profiles_list, user['name'], profile_slug, hours, user['admin'])
+                    db.charge_tokens(conn, profiles_list, user['name'], profile_slug, hours, user['admin'])
+                    current_balance = db.get_balance(conn, profiles_list, user['name'], profile_slug, user['admin'])
 
                     if current_balance < 0.0:
-                        should_cull = True
+                        pass
+                        # don't actually cull, let the balance go negative (since we don't have a way to alert the user that their server is about to be killed)
+                        # should_cull = True
+            db.close_connection(conn)
 
         if should_cull:
             app_log.info(
