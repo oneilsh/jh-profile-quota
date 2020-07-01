@@ -67,19 +67,19 @@ def update_user_tokens(conn: sq3.Connection, profiles: List, user: str, is_admin
         sys.stderr.write("Checking profile " + profile_slug + "\n")
 
         rate: float = 0.0
-        initial: float = 0.0
+        initial: float = float("inf")
         max_count: float = float("inf")
         active: bool = True
 
         if "quota" in profile:
             if is_admin:
                 rate = profile["quota"].get("admins", {}).get("newTokensPerDay", 0.0)
-                initial = profile["quota"].get("admins", {}).get("initialBalance", 0.0)
+                initial = profile["quota"].get("admins", {}).get("initialBalance", float("inf"))
                 max_count = profile["quota"].get("admins", {}).get("maxBalance", float("inf"))
                 active = profile["quota"].get("admins", {}).get("active", True)  # quotas default to active if not specifid
             else:
                 rate = profile["quota"].get("users", {}).get("newTokensPerDay", 0.0)
-                initial = profile["quota"].get("users", {}).get("initialBalance", 0.0)
+                initial = profile["quota"].get("users", {}).get("initialBalance", float("inf"))
                 max_count = profile["quota"].get("users", {}).get("maxBalance", float("inf"))
                 active = profile["quota"].get("users", {}).get("active", True)  # quotas default to active if not specifid
 
@@ -112,13 +112,13 @@ def update_user_tokens(conn: sq3.Connection, profiles: List, user: str, is_admin
 
 def get_initial(profiles_list: List, profile_slug: str, is_admin: bool) -> float:
     profile: Dict
-    initial: float = 0.0
+    initial: float = float("inf")
     for profile in profiles_list:
         if "quota" in profile and profile["slug"] == profile_slug:
             if is_admin:
-                initial = profile["quota"].get("admins", {}).get("initialBalance", 0.0)
+                initial = profile["quota"].get("admins", {}).get("initialBalance", float("inf"))
             else:
-                initial = profile["quota"].get("users", {}).get("initialBalance", 0.0)
+                initial = profile["quota"].get("users", {}).get("initialBalance", float("inf"))
     return initial
 
 
