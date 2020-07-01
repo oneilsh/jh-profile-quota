@@ -30,7 +30,7 @@ def get_profiles_by_balance(conn: sq3.Connection, profiles: List, user: str, is_
 
         if "quota" in profile:
             min_to_spawn: float = profile["quota"].get("minBalanceToSpawn", 0.0)
-            cost_tokens_per_hour: float = profile["quota"].get("costTokensPerHour", 0.0)
+            cost_tokens_per_hour: float = profile["quota"].get("costTokensPerHour", 1.0)
 
             c.execute("SELECT count FROM usertokens WHERE user='%s' AND profile_slug='%s';"%(user, profile_slug))
             res: Optional[Tuple[float]] = c.fetchone()
@@ -44,7 +44,7 @@ def get_profiles_by_balance(conn: sq3.Connection, profiles: List, user: str, is_
             if cost_tokens_per_hour > 0:
                 balance_hours = balance / cost_tokens_per_hour
 
-            profile["disabled"] = balance < min_to_spawn
+            profile["disabled"] = balance <= min_to_spawn
             profile["balanceTokens"] = balance
             profile["balanceHours"] = balance_hours
 
@@ -67,19 +67,19 @@ def update_user_tokens(conn: sq3.Connection, profiles: List, user: str, is_admin
 
         rate: float = 0.0
         initial: float = 0.0
-        max_count: float = 0.0
+        max_count: float = float("inf")
         active: bool = True
 
         if "quota" in profile:
             if is_admin:
-                rate = profile["quota"].get("admins", {}).get("newTokensPerHour", 0.0)
+                rate = profile["quota"].get("admins", {}).get("newTokensPerDay", 0.0)
                 initial = profile["quota"].get("admins", {}).get("initialBalance", 0.0)
-                max_count = profile["quota"].get("admins", {}).get("maxBalance", 0.0)
+                max_count = profile["quota"].get("admins", {}).get("maxBalance", float("inf"))
                 active = profile["quota"].get("admins", {}).get("active", True)  # quotas default to active if not specifid
             else:
-                rate = profile["quota"].get("users", {}).get("newTokensPerHour", 0.0)
+                rate = profile["quota"].get("users", {}).get("newTokensPerDay", 0.0)
                 initial = profile["quota"].get("users", {}).get("initialBalance", 0.0)
-                max_count = profile["quota"].get("users", {}).get("maxBalance", 0.0)
+                max_count = profile["quota"].get("users", {}).get("maxBalance", float("inf"))
                 active = profile["quota"].get("users", {}).get("active", True)  # quotas default to active if not specifid
 
         # if the quota isn't active, don't do anything
@@ -103,7 +103,7 @@ def update_user_tokens(conn: sq3.Connection, profiles: List, user: str, is_admin
         since_last_seconds: int = since_last_duration.days * 24 * 60 * 60 + since_last_duration.seconds
         since_last_hours: float = since_last_seconds / (60 * 60)
         
-        new_accumulated: float = since_last_hours * rate
+        new_accumulated: float = since_last_hours * rate / 24.0
         balance = min(balance + new_accumulated, max_count)
         
         c.execute("UPDATE usertokens SET count='%s', last_add='%s' WHERE user='%s' AND profile_slug = '%s'"%(balance, nowtimestamp, user, profile_slug))
@@ -158,11 +158,11 @@ def charge_tokens(conn: sq3.Connection, profiles: List, user: str, profile_slug:
 
     c = conn.cursor()
 
-    cost_tokens_per_hour: float = 0.0
+    cost_tokens_per_hour: float = 1.0
     profile: Dict
     for profile in profiles:
         if "quota" in profile and profile["slug"] == profile_slug:
-            cost_tokens_per_hour = profile["quota"].get("costTokensPerHour", 0.0)
+            cost_tokens_per_hour = profile["quota"].get("costTokensPerHour", 1.0)
     
     tokens_charged: float = hours * cost_tokens_per_hour
     new_balance: float = get_balance(conn, profiles, user, profile_slug, is_admin) - tokens_charged
@@ -174,11 +174,11 @@ def log_usage(conn: sq3.Connection, profiles: List, user: str, profile_slug: str
 
     timestamp: str = datetime.datetime.now().strftime(TIME_FMT)
     
-    cost_tokens_per_hour: float = 0.0
+    cost_tokens_per_hour: float = 1.0
     profile: Dict
     for profile in profiles:
         if "quota" in profile and profile["slug"] == profile_slug:
-            cost_tokens_per_hour = profile["quota"].get("costTokensPerHour", 0.0)
+            cost_tokens_per_hour = profile["quota"].get("costTokensPerHour", 1.0)
     
     tokens: float = hours * cost_tokens_per_hour
     cmd: str = "INSERT INTO usage (user, date, profile_slug, hours, tokens) VALUES ('%s', '%s', '%s', '%s', '%s');"%(user, timestamp, profile_slug, hours, tokens)
