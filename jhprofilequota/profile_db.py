@@ -97,7 +97,7 @@ def update_user_tokens(conn: sq3.Connection, profiles: List, user: str, is_admin
         balance: float = 0.0
         lastadd: str = nowtimestamp
         if count_lastadd:
-            balance = count_lastadd[0]
+            balance = float(count_lastadd[0])
             lastadd = count_lastadd[1]
 
         since_last_duration: datetime.timedelta = nowtime - datetime.datetime.strptime(lastadd, TIME_FMT)
