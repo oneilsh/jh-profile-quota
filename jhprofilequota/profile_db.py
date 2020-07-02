@@ -33,6 +33,18 @@ def get_profiles_by_balance(conn: sq3.Connection, profiles: List, user: str, is_
             min_to_spawn: float = profile["quota"].get("minBalanceToSpawn", 0.0)
             cost_tokens_per_hour: float = profile["quota"].get("costTokensPerHour", 1.0)
 
+            new_tokens_per_day: float = profile["quota"].get("users", {}).get("newTokensPerDay", 0.0)
+            if is_admin:
+                new_tokens_per_day = profile["quota"].get("admins", {}).get("newTokensPerDay", 0.0)
+
+            max_balance: float = profile["quota"].get("users", {}).get("maxBalance", "Unlimited")
+            if is_admin:
+                max_balance = profile["quota"].get("admins", {}).get("maxBalance", "Unlimited")
+
+            is_disabled: bool = profile["quota"].get("users", {}).get("disabled", False)
+            if is_admin:
+                is_disabled: bool = profile["quota"].get("admins", {}).get("disabled", False)
+
             c.execute("SELECT count FROM usertokens WHERE user='%s' AND profile_slug='%s';"%(user, profile_slug))
             res: Optional[Tuple[float]] = c.fetchone()
             
@@ -41,18 +53,31 @@ def get_profiles_by_balance(conn: sq3.Connection, profiles: List, user: str, is_
             if res:
                 balance = res[0]
                 
-            balance_hours: float = float("inf")
+            balance_hours: Union[float, str] = "Infinite"
+            new_hours_per_day: float = 0.0
+            min_to_spawn_hours: float = 0.0
+            max_balance_hours: float = 0.01
             if cost_tokens_per_hour > 0:
                 balance_hours = balance / cost_tokens_per_hour
+                new_hours_per_day = new_tokens_per_day / cost_tokens_per_hour
+                min_to_spawn_hours = min_to_spawn / cost_tokens_per_hour
+                max_balance_hours = max_balance / cost_tokens_per_hour
 
             profile["hasQuota"] = True
-            profile["disabled"] = balance <= min_to_spawn
-            profile["balanceTokens"] = balance
-            profile["balanceHours"] = balance_hours
+            profile["quotaDisplayRateHoursPerDay"] = round(new_hours_per_day, 1)
+            if balance <= min_to_spawn:
+                profile["quotaDisplayDisabled"] = True
+            # round to 1 decimal for display, down for balance and up for minimum to start so users aren't confused about edge cases
+            profile["quotaDisplayBalanceTokens"] = int(balance * 10.0)/10        # round decimal (floor)
+            profile["quotaDisplayBalanceHours"] = int(balance_hours * 10.0)/10   # floor
+            profile["quotaDisplayMaxBalance"] = int(max_balance * 10.0)/10   # ceiling
+            profile["quotaDisplayMaxBalanceHours"] = int(max_balance_hours * 10.0)/10   # ceiling
+            profile["quotaDisplayMinToStartHours"] = int(min_to_spawn_hours * 10 + 0.99)/10 # ceiling
+            profile["quotaDisplayDisabled"] = is_disabled
 
-        if "disabled" in profile:
-            if not profile["disabled"]:
-                return_profiles.append(profile)
+        # allow for disabled: flag in profile to turn profiles off altogether
+        if not profile.get("disabled", False) and not profile.get("quotaDisplayDisabled", False):
+            return_profiles.append(profile)
 
     # for use with not-latest jupyterhubs which require an index in the profile_form_template rather than slug
     for i in range(0, len(return_profiles)):
