@@ -20,9 +20,10 @@ def close_connection(conn: sq3.Connection) -> None:
 # for profiles without a quota set, entries are not added
 # if the user doesn't have a balance defined, it defaults to 0.0 (thus call update_user_tokens before this to initialize/update balances)
 def get_profiles_by_balance(conn: sq3.Connection, profiles: List, user: str, is_admin: bool) -> List:
-    ensure_initialized(conn, profiles, user, is_admin)
-    
+    ensure_initialized(conn, profiles, user, is_admin) 
     c = conn.cursor()
+
+    return_profiles: List = []
 
     profile: Dict
     for profile in profiles:
@@ -49,8 +50,15 @@ def get_profiles_by_balance(conn: sq3.Connection, profiles: List, user: str, is_
             profile["balanceTokens"] = balance
             profile["balanceHours"] = balance_hours
 
+        if "disabled" in profile:
+            if not profile["disabled"]:
+                return_profiles.append(profile)
 
-    return profiles
+    # for use with not-latest jupyterhubs which require an index in the profile_form_template rather than slug
+    for i in range(0, len(return_profiles)):
+        return_profiles[i]["index"] = i
+
+    return return_profiles
 
 
 # returns token count; updating their count based on time elapsed since last update
