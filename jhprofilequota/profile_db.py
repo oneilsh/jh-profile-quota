@@ -37,9 +37,9 @@ def get_profiles_by_balance(conn: sq3.Connection, profiles: List, user: str, is_
             if is_admin:
                 new_tokens_per_day = profile["quota"].get("admins", {}).get("newTokensPerDay", 0.0)
 
-            max_balance: float = profile["quota"].get("users", {}).get("maxBalance", "Unlimited")
+            max_balance: float = profile["quota"].get("users", {}).get("maxBalance", float("inf"))
             if is_admin:
-                max_balance = profile["quota"].get("admins", {}).get("maxBalance", "Unlimited")
+                max_balance = profile["quota"].get("admins", {}).get("maxBalance", float("inf"))
 
             is_disabled: bool = profile["quota"].get("users", {}).get("disabled", False)
             if is_admin:
@@ -70,8 +70,12 @@ def get_profiles_by_balance(conn: sq3.Connection, profiles: List, user: str, is_
             # round to 1 decimal for display, down for balance and up for minimum to start so users aren't confused about edge cases
             profile["quotaDisplayBalanceTokens"] = int(balance * 10.0)/10        # round decimal (floor)
             profile["quotaDisplayBalanceHours"] = int(balance_hours * 10.0)/10   # floor
-            profile["quotaDisplayMaxBalance"] = int(max_balance * 10.0)/10   # ceiling
-            profile["quotaDisplayMaxBalanceHours"] = int(max_balance_hours * 10.0)/10   # ceiling
+            if max_balance == float("inf"):
+                profile["quotaDisplayMaxBalance"] = "Unlimited"
+                profile["quotaDisplayMaxBalanceHours"] = "Unlimited"
+            else:
+                profile["quotaDisplayMaxBalance"] = int(max_balance * 10.0)/10              # ceiling
+                profile["quotaDisplayMaxBalanceHours"] = int(max_balance_hours * 10.0)/10   # ceiling
             profile["quotaDisplayMinToStartHours"] = int(min_to_spawn_hours * 10 + 0.99)/10 # ceiling
             profile["quotaDisplayDisabled"] = is_disabled
 
